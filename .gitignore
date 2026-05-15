@@ -1,0 +1,11 @@
+# Ignore downloaded videos and datasets
+tools/Dataset/
+*.mp4
+*.avi
+
+# Ignore Python cache
+__pycache__/
+*.pyc
+
+# Ignore environment files
+.env
