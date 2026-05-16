@@ -74,15 +74,15 @@
 
     "_comment_5": "----------------------------------------------------------",
 
-    "surgical_scrub": {
-      "id": "surgical_scrub",
-      "name": "Surgical Hand Scrub",
+    "Hand_Hygiene": {
+      "id": "Hand_Hygiene",
+      "name": "Surgical Hand Hygiene",
       "category": "Medical",
       "source_label": "WHO Surgical Safety Guidelines",
       "source_url": "https://www.who.int/publications/i/item/9789241598552",
       "session_duration_seconds": 120,
       "primary_metric": {
-        "label": "Scrub Duration",
+        "label": "Hand Hygiene Duration",
         "unit": "Seconds",
         "target_min": 120,
         "target_max": 180

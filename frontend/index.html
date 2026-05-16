@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SkillMentor - NextGen AI Clinical & Industrial Simulation</title>
+    <style>
+        :root {
+            --bg-gradient: linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%);
+            --surface: rgba(30, 41, 59, 0.7);
+            --accent-medical: #06b6d4; /* Cyan */
+            --accent-industrial: #f59e0b; /* Amber */
+            --text-main: #f8fafc;
+            --text-muted: #94a3b8;
+            --border: rgba(255, 255, 255, 0.08);
+        }
+
+        body {
+            font-family: '-apple-system', BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            background: var(--bg-gradient);
+            color: var(--text-main);
+            margin: 0;
+            padding: 40px 20px;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            backdrop-filter: blur(100px);
+        }
+
+        /* Header Branding */
+        .brand-container {
+            text-align: center;
+            margin-bottom: 35px;
+        }
+        h1 {
+            font-size: 2.5rem;
+            font-weight: 800;
+            letter-spacing: -0.05em;
+            background: linear-gradient(to right, #38bdf8, #818cf8);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin: 0 0 8px 0;
+        }
+        .subtitle {
+            color: var(--text-muted);
+            font-size: 0.95rem;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+        }
+
+        /* Glassmorphism Control Panel */
+        .control-panel {
+            background: var(--surface);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border: 1px solid var(--border);
+            padding: 24px 40px;
+            border-radius: 20px;
+            display: flex;
+            gap: 30px;
+            align-items: flex-end;
+            margin-bottom: 30px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.3);
+        }
+
+        .select-group {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        label {
+            font-size: 0.75rem;
+            font-weight: 700;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+        }
+
+        select {
+            background: #0f172a;
+            color: var(--text-main);
+            border: 1px solid var(--border);
+            padding: 12px 20px;
+            border-radius: 12px;
+            font-size: 0.95rem;
+            cursor: pointer;
+            outline: none;
+            min-width: 220px;
+            transition: all 0.3s ease;
+            appearance: none;
+            background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'></polyline></svg>");
+            background-repeat: no-repeat;
+            background-position: right 12px center;
+            background-size: 16px;
+        }
+
+        select:focus {
+            border-color: var(--accent-medical);
+            box-shadow: 0 0 0 4px rgba(6, 182, 212, 0.15);
+        }
+
+        /* Action Button */
+        button {
+            background: linear-gradient(135deg, #0ea5e9 0%, #2563eb 100%);
+            color: white;
+            font-weight: 600;
+            border: none;
+            padding: 14px 35px;
+            border-radius: 12px;
+            font-size: 0.95rem;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            box-shadow: 0 4px 12px rgba(37, 99, 235, 0.3);
+        }
+
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(37, 99, 235, 0.4);
+        }
+
+        /* Live Metrics Dashboard */
+        .telemetry-dashboard {
+            display: flex;
+            gap: 50px;
+            background: rgba(15, 23, 42, 0.4);
+            padding: 15px 40px;
+            border-radius: 100px;
+            border: 1px solid var(--border);
+            margin-bottom: 25px;
+            backdrop-filter: blur(8px);
+        }
+
+        .metric-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 1.05rem;
+            font-weight: 600;
+        }
+
+        .dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            display: inline-block;
+        }
+
+        #session-timer { color: #f59e0b; }
+        #session-score { color: #10b981; }
+        #cpr-bpm-display { color: #06b6d4; display: none; }
+
+        /* Advanced Viewport Container */
+        .video-container {
+            position: relative;
+            width: 640px;
+            height: 480px;
+            border-radius: 24px;
+            overflow: hidden;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+            border: 1px solid var(--border);
+            background: #000;
+        }
+
+        video, canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 640px;
+            height: 480px;
+        }
+        video { transform: scaleX(-1); visibility: hidden; }
+        canvas { transform: scaleX(-1); }
+    </style>
+
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
+</head>
+<body>
+
+    <div class="brand-container">
+        <h1>SkillMentor AI</h1>
+        <div class="subtitle">Edge AI Multimodal Assessment Engine</div>
+    </div>
+
+    <div class="control-panel">
+        <div class="select-group">
+            <label for="domain-select">Operations Domain</label>
+            <select id="domain-select" onchange="updateSkillsDropdown()">
+                <option value="medical">Healthcare & Medical</option>
+                <option value="industrial">Heavy Industry & Safety</option>
+            </select>
+        </div>
+
+        <div class="select-group">
+            <label for="skill-select">Target Evaluation Skill</label>
+            <select id="skill-select">
+                </select>
+        </div>
+
+        <button id="start-btn" onclick="triggerSessionStart()">Launch Simulation</button>
+    </div>
+
+    <div class="telemetry-dashboard">
+        <div class="metric-item" id="session-timer">
+            <span class="dot" style="background: #f59e0b;"></span>Time: --s
+        </div>
+        <div class="metric-item" id="session-score">
+            <span class="dot" style="background: #10b981;"></span>Score: 100%
+        </div>
+        <div class="metric-item" id="cpr-bpm-display">
+            <span class="dot" style="background: #06b6d4;"></span>BPM: --
+        </div>
+    </div>
+
+    <div class="video-container">
+        <video id="webcam" autoplay playsinline></video>
+        <canvas id="output_canvas" width="640" height="480"></canvas>
+    </div>
+
+    <script src="js/scorer.js"></script>
+    <script src="js/session.js"></script>
+    <script src="js/camera.js"></script>
+
+    <script>
+        // Production-Grade Skill Tree Mapping
+        const skillTree = {
+            medical: [
+                { id: "cpr", name: "Cardiopulmonary Resuscitation (CPR)" },
+                { id: "heimlich", name: "Heimlich Maneuver (Choking)" },
+                { id: "hand_hygiene", name: "Hand Hygiene Protocols" }
+            ],
+            industrial: [
+                { id: "ppe_inspection", name: "Safety Helmet & PPE Verification" }
+            ]
+        };
+
+        function updateSkillsDropdown() {
+            const domainSelect = document.getElementById("domain-select");
+            const skillSelect = document.getElementById("skill-select");
+            const selectedDomain = domainSelect.value;
+
+            skillSelect.innerHTML = "";
+
+            skillTree[selectedDomain].forEach(skill => {
+                const option = document.createElement("option");
+                option.value = skill.id;
+                option.text = skill.name;
+                skillSelect.appendChild(option);
+            });
+
+            // Adjust theme colors based on domain for high-end presentation feel
+            if (selectedDomain === "industrial") {
+                document.documentElement.style.setProperty('--accent-medical', 'var(--accent-industrial)');
+            } else {
+                document.documentElement.style.setProperty('--accent-medical', '#06b6d4');
+            }
+
+            manageBpmDisplayLayout();
+        }
+
+        function manageBpmDisplayLayout() {
+            const skillSelect = document.getElementById("skill-select");
+            const bpmDisplay = document.getElementById("cpr-bpm-display");
+            if (skillSelect.value === "cpr") {
+                bpmDisplay.style.display = "flex";
+            } else {
+                bpmDisplay.style.display = "none";
+            }
+        }
+
+        function triggerSessionStart() {
+            const skillSelect = document.getElementById("skill-select");
+            const targetSkillId = skillSelect.value;
+
+            if (window.sessionManager) {
+                window.sessionManager.startSession(targetSkillId);
+            }
+        }
+
+        window.addEventListener("DOMContentLoaded", () => {
+            updateSkillsDropdown();
+            document.getElementById("skill-select").addEventListener("change", manageBpmDisplayLayout);
+            
+            if (window.skillCameraManager) {
+                window.skillCameraManager.initializePipeline("webcam", "output_canvas");
+            }
+        });
+    </script>
+</body>
+</html>
