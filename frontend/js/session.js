@@ -2,176 +2,490 @@
  * SkillMentor - Frontend Session Manager
  * Handles API orchestration and session lifecycle states.
  */
+
+function escapeHTML(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+}
+
 class SkillSessionManager {
+
     constructor() {
-        this.apiBaseUrl = "http://127.0.0.1:8000/api";
+        this.apiBaseUrl = CONFIG.API_BASE;
         this.currentSkillData = null;
         this.isSessionActive = false;
         this.currentScore = 100.0;
         this.feedbackLog = [];
         this.frameCounter = 0;
+        this.timerInterval = null;
+        this._dimensionScores = {};
+        this._ghostVisible = true;
+        this._wristYMax = null;
+        this._wristYMin = null;
     }
 
+    // ─────────────────────────────────────────────────────────
+    // بداية الجلسة — يجيب بيانات المهارة من criteria-db.js
+    // ─────────────────────────────────────────────────────────
     async startSession(skillId) {
         try {
-            const response = await fetch(`${this.apiBaseUrl}/skills/${skillId}`);
-            if (!response.ok) throw new Error("Failed to fetch criteria");
-            
-            this.currentSkillData = await response.json();
+            // ① جيب البيانات من criteria-db.js (كاش أو API)
+            const skillData = await CRITERIA_DB.loadSkill(skillId);
+
+            if (!skillData || !skillData.dimensions || skillData.dimensions.length === 0) {
+                throw new Error(`المهارة ${skillId} ما تحتوي على dimensions`);
+            }
+
+            this.currentSkillData = skillData;
             this.isSessionActive = true;
             this.currentScore = 100.0;
             this.feedbackLog = [];
             this.frameCounter = 0;
-            
-            // Reset the detached scoring engine
+            this._dimensionScores = {};
+            this._ghostVisible = true;
+            this._wristYMax = null;
+            this._wristYMin = null;
+            // ② صفّر محرك التقييم
             heuristicScorer.reset();
-            
-            console.log(`Session started: ${this.currentSkillData.name}`);
-            this.startUiTimer(this.currentSkillData.session_duration_seconds);
+
+            console.log(`✓ Session started: ${skillData.name}`);
+
+            // ③ حدّث الواجهة
+            this._updateUI(skillData);
+
+            // ④ ابدأ العداد — يستخدم session_duration (من main.py)
+            const duration = skillData.session_duration || skillData.session_duration_seconds || 60;
+            this._startTimer(duration);
+
         } catch (error) {
             console.error("Session Start Failure:", error);
+            this._showError("فشل تحميل بيانات المهارة — تأكد من تشغيل السيرفر.");
         }
     }
 
-   processFrame(landmarks) {
-        // Ensure the session is actively running and skill configuration data is loaded
+    // ─────────────────────────────────────────────────────────
+    // معالجة كل فريم من الكاميرا
+    // ─────────────────────────────────────────────────────────
+
+    processFrame(poseLandmarks, handLandmarks = null) {
         if (!this.isSessionActive || !this.currentSkillData) return;
 
         this.frameCounter++;
-        
-        // Iterate through each clinical dimension defined in the JSON database configuration
+        if (this.frameCounter < 5) return;
+
         this.currentSkillData.dimensions.forEach(dimension => {
-            // Extract the calculated geometric value (angle/distance) for the current frame
-            const signalValue = this.calculatePoseSignal(dimension.pose_signal, landmarks);
-            
-            if (signalValue !== null) {
-                // ==========================================
-                // 1. GENERIC SPATIAL EVALUATION (All Skills)
-                // ==========================================
-                // Check static boundaries (min/max bounds) for immediate postural mistakes
-                const evaluation = heuristicScorer.evaluateDimension(dimension, signalValue);
-                this.triggerLiveFeedback(dimension.id, evaluation.feedback);
-                
-                // If a camera-noise-filtered posture violation is detected, apply penalty
-                if (evaluation.shouldPenalize) {
-                    this.currentScore = Math.max(0, this.currentScore - 2.0);
-                    this.updateUiScore(this.currentScore);
-                    this.feedbackLog.push(evaluation.feedback);
+
+            const signalValue = this._calculateSignal(
+                dimension.pose_signal,
+                poseLandmarks,
+                handLandmarks
+            );
+
+            if (signalValue === null) return;
+
+            // ══════════════════════════════════════════════════
+            // التقييم  — cpr
+            // ══════════════════════════════════════════════════
+
+            if (this.currentSkillData.id === "cpr") {
+                // حدّث الـ wristY أولاً
+                if (dimension.pose_signal === "wrist_center_y") {
+                    if (this._wristYMax === null) this._wristYMax = signalValue;
+                    if (this._wristYMin === null) this._wristYMin = signalValue;
+                    this._wristYMax = Math.max(this._wristYMax, signalValue);
+                    this._wristYMin = Math.min(this._wristYMin, signalValue);
+
+                    // صفّر كل 60 فريم
+                    //if (this.frameCounter % 60 === 0) {
+                    //this._wristYMax = signalValue;
+                    // this._wristYMin = signalValue;
+                    // }
                 }
 
-                // ==========================================
-                // 2. SKILL-SPECIFIC TEMPORAL HEURISTIC (CPR Only)
-                // ==========================================
-                // If the active skill is CPR and the target signal is the elbow angle, 
-                // invoke the advanced rhythm tracking engine to calculate live BPM.
-                if (this.currentSkillData.id === "cpr" && dimension.pose_signal === "elbow_angle") {
-                    const rhythmEvaluation = heuristicScorer.evaluateCprRhythm(signalValue);
-                    
-                    // If a complete compression-release cycle was caught, update metrics
-                    if (rhythmEvaluation) {
-                        const bpmElement = document.getElementById("cpr-bpm-display");
-                        const rhythmFeedbackElement = document.getElementById(`feedback-${dimension.id}`);
-                        
-                        // Render calculated speed metrics to the user interface safely
-                        if (bpmElement) {
-                            bpmElement.innerText = `BPM: ${rhythmEvaluation.bpm}`;
-                        }
-                        if (rhythmFeedbackElement) {
-                            rhythmFeedbackElement.innerText = rhythmEvaluation.feedback;
-                        }
+                const result = heuristicScorer.evaluateCpr(
+                    dimension, signalValue, this._wristYMax, this._wristYMin
+                );
 
-                        // Penalize if the rolling average frequency falls outside 100-120 BPM
-                        if (!rhythmEvaluation.isValid) {
-                            this.currentScore = Math.max(0, this.currentScore - 1.0);
-                            this.updateUiScore(this.currentScore);
-                            this.feedbackLog.push(rhythmEvaluation.feedback);
-                        }
-                    }
+                if (result.type === "rhythm" && result.rhythm) {
+                    this._dimensionScores['cpr_rhythm'] = result.rhythm.isValid ? 100 : 0;
+                    this._updateBPM(result.rhythm.bpm);
+                    if (!result.rhythm.isValid) this.feedbackLog.push(result.rhythm.feedback);
                 }
+
+                this._dimensionScores[dimension.id] = result.isValid ? 100 : 0;
+
+                if (this.frameCounter % 10 === 0) {
+                    this._updateDimensionFeedback(dimension.id, result.feedback, result.isValid);
+                }
+
+                this.currentScore = this._calcAverageScore();
+                this._updateScoreUI(this.currentScore);
+                return;
             }
+
+            // ══════════════════════════════════════════════════
+            // التقييم العام — كل المهارات الأخرى
+            // ══════════════════════════════════════════════════
+            const evaluation = heuristicScorer.evaluateDimension(dimension, signalValue);
+
+            this._dimensionScores[dimension.id] = evaluation.isValid ? 100 : 0;
+            this.currentScore = this._calcAverageScore();
+
+            if (this.frameCounter % 10 === 0) {
+                this._updateDimensionFeedback(dimension.id, evaluation.feedback, evaluation.isValid);
+            }
+
+            if (!evaluation.isValid && this.frameCounter % 30 === 0) {
+                this.feedbackLog.push(evaluation.feedback);
+            }
+
+            this._updateScoreUI(this.currentScore);
         });
+
+        // Ghost يختفي لما المستخدم يطابق الوضعية
+        if (this._ghostVisible
+            && this.currentScore >= 70
+            && Object.keys(this._dimensionScores).length > 0) {
+            this._ghostVisible = false;
+            console.log('✓ Ghost hidden — user aligned correctly');
+        }
     }
 
-    calculatePoseSignal(signalName, landmarks) {
+    // ─────────────────────────────────────────────────────────
+    // حساب الـ signals — 19 signal كاملة
+    // ─────────────────────────────────────────────────────────
+    _calculateSignal(signalName, lm, handLm) {
         try {
             switch (signalName) {
+
+                // ── Pose signals ──────────────────────────────
+                case "wrist_center_x":
+                    return (lm[15].x + lm[16].x) / 2;
+
+                case "wrist_center_y":
+                    return (lm[15].y + lm[16].y) / 2;
+
+                case "arm_angle":
+                    return (
+                        this._angle(lm[11], lm[13], lm[15]) +
+                        this._angle(lm[12], lm[14], lm[16])
+                    ) / 2;
+
                 case "elbow_angle":
-                    return this.computeAngle(landmarks[12], landmarks[14], landmarks[16]);
-                case "shoulder_hip_angle":
-                    return this.computeAngle(landmarks[12], landmarks[24], landmarks[26]);
-                case "wrist_elbow_y_diff":
-                    return landmarks[14].y - landmarks[16].y;
+                    return Math.min(
+                        this._angle(lm[11], lm[13], lm[15]),
+                        this._angle(lm[12], lm[14], lm[16])
+                    );
+                case "body_lean":
+                    return Math.abs(
+                        ((lm[11].x + lm[12].x) / 2) -
+                        ((lm[23].x + lm[24].x) / 2)
+                    ) * 90;
+
+                case "shoulder_level":
+                    return Math.abs(lm[11].y - lm[12].y);
+
+                case "hand_height":
+                    return Math.abs(
+                        (lm[15].y + lm[16].y) / 2 -
+                        (lm[11].y + lm[12].y) / 2
+                    );
+
                 case "wrist_to_navel_distance":
-                    return this.computeDistance(landmarks[16], landmarks[24]);
+                    const navel = {
+                        x: (lm[23].x + lm[24].x) / 2,
+                        y: (lm[23].y + lm[24].y) / 2
+                    };
+                    const wristCenter = {
+                        x: (lm[15].x + lm[16].x) / 2,
+                        y: (lm[15].y + lm[16].y) / 2
+                    };
+                    return this._distance(wristCenter, navel);
+
+                case "shoulder_hip_angle":
+                    return (
+                        this._angle(lm[12], lm[24], lm[26]) +
+                        this._angle(lm[11], lm[23], lm[25])
+                    ) / 2;
+
+                case "hip_knee_ankle_angle":
+                    // زاوية الظهر والحوض — كتف-ورك-ركبة (أسوأ الاثنين)
+                    return Math.min(
+                        this._angle(lm[11], lm[23], lm[25]),
+                        this._angle(lm[12], lm[24], lm[26])
+                    );
+
+                case "wrist_to_body_center":
+                    const bodyCenter = {
+                        x: (lm[11].x + lm[12].x) / 2,
+                        y: (lm[11].y + lm[12].y) / 2
+                    };
+                    const avgWrist = {
+                        x: (lm[15].x + lm[16].x) / 2,
+                        y: (lm[15].y + lm[16].y) / 2
+                    };
+                    return this._distance(avgWrist, bodyCenter);
+
+                case "knee_angle":
+                    // زاوية الركبة — ورك-ركبة-كاحل (متوسط الاثنين)
+                    return (
+                        this._angle(lm[23], lm[25], lm[27]) +
+                        this._angle(lm[24], lm[26], lm[28])
+                    ) / 2;
+
+                // ── Holistic Hands signals ────────────────────
+                case "finger_spread":
+                    if (!handLm || handLm.length === 0) return null;
+                    return this._fingerSpread(handLm[0]);
+
+                case "interdigital_coverage":
+                    if (!handLm || handLm.length === 0) return null;
+                    return this._interdigitalCoverage(handLm[0]);
+
+                case "palm_to_palm_contact":
+                    if (!handLm || handLm.length < 2) return null;
+                    return this._palmContact(handLm[0], handLm[1]);
+
+                case "wrist_rotation":
+                    if (!handLm || handLm.length === 0) return null;
+                    return this._wristRotation(handLm[0]);
+
+                case "thumb_coverage":
+                    if (!handLm || handLm.length === 0) return null;
+                    return this._thumbCoverage(handLm[0]);
+
+                case "fist_formation":
+                    if (!handLm || handLm.length === 0) return null;
+                    return this._fistFormation(handLm[0]);
+
+                case "thumb_position":
+                    if (!handLm || handLm.length === 0) return null;
+                    return this._distance(handLm[0][4], handLm[0][8]);
+
                 default:
+                    console.warn(`⚠ signal غير معروف: ${signalName}`);
                     return null;
             }
         } catch (e) {
+            console.error(`⚠ فشل حساب signal: ${signalName}`, e);
             return null;
         }
     }
 
-    computeAngle(p1, p2, p3) {
-        let radians = Math.atan2(p3.y - p2.y, p3.x - p2.x) - Math.atan2(p1.y - p2.y, p1.x - p2.x);
-        let angle = Math.abs((radians * 180.0) / Math.PI);
-        if (angle > 180.0) angle = 360.0 - angle;
-        return angle;
+    // ─────────────────────────────────────────────────────────
+    // حسابات هندسية
+    // ─────────────────────────────────────────────────────────
+    _angle(p1, p2, p3) {
+        const r = Math.atan2(p3.y - p2.y, p3.x - p2.x)
+            - Math.atan2(p1.y - p2.y, p1.x - p2.x);
+        let deg = Math.abs(r * 180 / Math.PI);
+        if (deg > 180) deg = 360 - deg;
+        return deg;
     }
 
-    computeDistance(p1, p2) {
-        return Math.sqrt(Math.pow(p2.x - p1.x, 2) + Math.pow(p2.y - p1.y, 2));
+    _distance(p1, p2) {
+        return Math.sqrt(
+            Math.pow(p2.x - p1.x, 2) +
+            Math.pow(p2.y - p1.y, 2)
+        );
     }
 
-    triggerLiveFeedback(dimensionId, message) {
-        if (this.frameCounter % 10 === 0) {
-            const feedbackElement = document.getElementById(`feedback-${dimensionId}`);
-            if (feedbackElement) feedbackElement.innerText = message;
+    // ─────────────────────────────────────────────────────────
+    // حسابات Hands signals
+    // ─────────────────────────────────────────────────────────
+    _fingerSpread(hand) {
+        // متوسط المسافة بين رؤوس الأصابع
+        const tips = [4, 8, 12, 16, 20];
+        let total = 0, count = 0;
+        for (let i = 0; i < tips.length - 1; i++) {
+            total += this._distance(hand[tips[i]], hand[tips[i + 1]]);
+            count++;
         }
+        return count > 0 ? total / count : 0;
     }
 
-    async endSession(studentName) {
+    _interdigitalCoverage(hand) {
+        // متوسط المسافة بين قواعد الأصابع
+        const bases = [2, 5, 9, 13, 17];
+        let total = 0, count = 0;
+        for (let i = 0; i < bases.length - 1; i++) {
+            total += this._distance(hand[bases[i]], hand[bases[i + 1]]);
+            count++;
+        }
+        return count > 0 ? total / count : 0;
+    }
+
+    _palmContact(hand1, hand2) {
+        // المسافة بين راحتي اليدين
+        return this._distance(hand1[0], hand2[0]);
+    }
+
+    _wristRotation(hand) {
+        // زاوية دوران المعصم من خط الإبهام للخنصر
+        const r = Math.atan2(
+            hand[20].y - hand[4].y,
+            hand[20].x - hand[4].x
+        );
+        return Math.abs(r * 180 / Math.PI);
+    }
+
+    _thumbCoverage(hand) {
+        // مدى تغطية الإبهام — المسافة من طرف الإبهام لطرف الخنصر
+        return this._distance(hand[4], hand[20]);
+    }
+
+    // قياس انغلاق القبضة — متوسط ثني الأصابع
+    _fistFormation(hand) {
+        const tips = [8, 12, 16, 20];
+        const bases = [5, 9, 13, 17];
+        let total = 0;
+        tips.forEach((tip, i) => {
+            total += this._distance(hand[tip], hand[bases[i]]);
+        });
+        return total / tips.length;
+    }
+
+
+    // ─────────────────────────────────────────────────────────
+    // نهاية الجلسة
+    // ─────────────────────────────────────────────────────────
+    _calcAverageScore() {
+        const scores = Object.values(this._dimensionScores);
+        if (!scores.length) return 0;  // ← صح
+        return Math.round(scores.reduce((a, b) => a + b, 0) / scores.length);
+    }
+
+    endSession() {
         this.isSessionActive = false;
-        
-        const payload = {
-            student_name: studentName,
-            skill_id: this.currentSkillData.id,
-            final_score: Math.round(this.currentScore),
-            feedback_summary: [...new Set(this.feedbackLog)].slice(0, 5)
-        };
+        this._ghostVisible = false;
+        if (this.timerInterval) {
+            clearInterval(this.timerInterval);
+            this.timerInterval = null;
+        }
 
-        try {
-            const response = await fetch(`${this.apiBaseUrl}/session/result`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(payload)
-            });
-            if (response.ok) this.displayFinalReport(payload);
-        } catch (error) {
-            console.error("Data Sync Failure:", error);
+        const finalScore = Object.keys(this._dimensionScores).length > 0
+            ? Math.round(this.currentScore)
+            : 0;
+        console.log(`✓ Session ended — Final Score: ${finalScore}%`);
+
+        // أرجع النتيجة لـ app.js عشان يعرضها
+        this.onSessionEnd?.(this.currentSkillData, finalScore, this.feedbackLog);
+
+    }
+
+    // ─────────────────────────────────────────────────────────
+    // مساعدات الواجهة
+    // ─────────────────────────────────────────────────────────
+    _updateUI(skillData) {
+        const pm = skillData.primary_metric;
+        const el = (id) => document.getElementById(id);
+
+        if (el('skillBadgePractice')) el('skillBadgePractice').textContent = skillData.name;
+        if (el('pmLabel')) el('pmLabel').textContent = pm?.label || 'Rate';
+        if (el('pmTarget')) el('pmTarget').textContent = pm?.target_display || '—';
+        if (el('pmUnit')) el('pmUnit').textContent = pm?.unit || '';
+        if (el('session-status')) el('session-status').textContent = 'Session Active';
+
+        // بناء صفوف الـ Live Scores
+        const scoresEl = el('liveCriteriaScores');
+        if (scoresEl) {
+            scoresEl.innerHTML = skillData.dimensions.map(d => `
+    <div class="score-row-mini">
+        <span class="score-name-mini">${escapeHTML(d.name)}</span>
+                    <div class="score-bar-mini">
+                        <div class="score-bar-fill" id="sb-${d.id}" style="width:0%"></div>
+                    </div>
+                    <span class="score-pct-mini" id="sv-${d.id}">—</span>
+                </div>
+            `).join('');
         }
     }
 
-    startUiTimer(seconds) {
+    _updateDimensionFeedback(dimId, message, isValid) {
+        const bar = document.getElementById(`sb-${dimId}`);
+        const val = document.getElementById(`sv-${dimId}`);
+        const color = isValid ? 'var(--good)' : 'var(--bad)';
+
+        if (bar) {
+            bar.style.width = isValid ? '85%' : '25%';
+            bar.style.background = color;
+        }
+        if (val) {
+            val.textContent = isValid ? '✓' : '✗';
+            val.style.color = color;
+        }
+
+        // حدّث قائمة الفيدباك
+        const feedbackList = document.getElementById('feedbackList');
+        if (feedbackList && this.frameCounter % 10 === 0) {
+            const cls = isValid ? 'fb-good' : 'fb-bad';
+            const icon = isValid ? '✓' : '🔴';
+            const item = document.createElement('div');
+            item.className = `fb-item ${cls}`;
+            item.innerHTML = `
+        <span class="fb-icon">${icon}</span>
+        <span>${escapeHTML(message)}</span>`;
+            feedbackList.appendChild(item);
+
+            // احتفظ بآخر 5 رسائل فقط
+            while (feedbackList.children.length > 5) {
+                feedbackList.removeChild(feedbackList.firstChild);
+            }
+        }
+    }
+
+    _updateScoreUI(score) {
+        const el = document.getElementById('pmVal');
+        if (el) {
+            el.textContent = Math.round(score) + '%';
+            el.className = score >= 80 ? 'color-good' : score >= 60 ? 'color-warn' : 'color-bad';
+        }
+    }
+
+    _updateBPM(bpm) {
+        const el = document.getElementById('pmVal');
+        if (el && this.currentSkillData?.id === 'cpr') {
+            el.textContent = bpm;
+            const pm = this.currentSkillData.primary_metric;
+            el.className = (bpm >= pm.target_min && bpm <= pm.target_max)
+                ? 'color-good' : 'color-warn';
+        }
+    }
+
+    _startTimer(seconds) {
+        if (this.timerInterval) clearInterval(this.timerInterval);
         let remaining = seconds;
-        const timerInterval = setInterval(() => {
+
+        const timerEl = document.getElementById('timerDisp');
+
+        const fmt = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+        if (timerEl) timerEl.textContent = fmt(seconds);
+
+        this.timerInterval = setInterval(() => {
             if (!this.isSessionActive || remaining <= 0) {
-                clearInterval(timerInterval);
-                if (remaining <= 0) this.endSession("Abrar");
+                clearInterval(this.timerInterval);
+                if (remaining <= 0) this.endSession();
                 return;
             }
             remaining--;
-            const timerElement = document.getElementById("session-timer");
-            if (timerElement) timerElement.innerText = `Time: ${remaining}s`;
+            if (timerEl) {
+                timerEl.textContent = fmt(remaining);
+                if (remaining <= 5) timerEl.classList.add('urgent');
+                else timerEl.classList.remove('urgent');
+            }
         }, 1000);
     }
 
-    updateUiScore(score) {
-        const scoreElement = document.getElementById("session-score");
-        if (scoreElement) scoreElement.innerText = `Score: ${Math.round(score)}%`;
-    }
-
-    displayFinalReport(data) {
-        alert(`Assessment Complete!\nFinal Grade: ${data.final_score}%\nReview Items: ${data.feedback_summary.join(", ")}`);
+    _showError(message) {
+        const feedbackList = document.getElementById('feedbackList');
+        if (feedbackList) {
+            feedbackList.innerHTML = `
+                <div class="fb-item fb-bad">
+                    <span class="fb-icon">❌</span>
+                    <span>${message}</span>
+                </div>`;
+        }
     }
 }
 
